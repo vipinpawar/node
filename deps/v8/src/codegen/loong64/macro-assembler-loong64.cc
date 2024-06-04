@@ -376,13 +376,7 @@ void MacroAssembler::LoadProtectedPointerField(Register destination,
                                                MemOperand field_operand) {
   DCHECK(root_array_available());
 #ifdef V8_ENABLE_SANDBOX
-  ASM_CODE_COMMENT(this);
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
-  Ld_wu(destination, field_operand);
-  Ld_d(scratch,
-       MemOperand(kRootRegister, IsolateData::trusted_cage_base_offset()));
-  Or(destination, destination, scratch);
+  DecompressProtected(destination, field_operand);
 #else
   LoadTaggedField(destination, field_operand);
 #endif
@@ -3908,6 +3902,7 @@ void MacroAssembler::EnterExitFrame(int stack_space,
   ASM_CODE_COMMENT(this);
   DCHECK(frame_type == StackFrame::EXIT ||
          frame_type == StackFrame::BUILTIN_EXIT ||
+         frame_type == StackFrame::API_ACCESSOR_EXIT ||
          frame_type == StackFrame::API_CALLBACK_EXIT);
 
   // Set up the frame structure on the stack.
@@ -4529,13 +4524,6 @@ int MacroAssembler::CallCFunctionHelper(
                         IsolateData::fast_c_call_caller_pc_offset()));
         St_d(fp, MemOperand(kRootRegister,
                             IsolateData::fast_c_call_caller_fp_offset()));
-#if DEBUG
-        // Reset Isolate::context field right before the fast C call such that
-        // the GC can visit this field unconditionally. This is necessary
-        // because CEntry sets it to kInvalidContext in debug build only.
-        static_assert(Context::kNoContext == 0);
-        StoreRootRelative(IsolateData::context_offset(), zero_reg);
-#endif
       } else {
         DCHECK_NOT_NULL(isolate());
         li(scratch,
@@ -4544,15 +4532,6 @@ int MacroAssembler::CallCFunctionHelper(
         li(scratch,
            ExternalReference::fast_c_call_caller_fp_address(isolate()));
         St_d(fp, MemOperand(scratch, 0));
-#if DEBUG
-        // Reset Isolate::context field right before the fast C call such that
-        // the GC can visit this field unconditionally. This is necessary
-        // because CEntry sets it to kInvalidContext in debug build only.
-        static_assert(Context::kNoContext == 0);
-        St_d(zero_reg,
-             ExternalReferenceAsOperand(
-                 ExternalReference::context_address(isolate()), pc_scratch));
-#endif
       }
     }
 
@@ -4930,6 +4909,21 @@ void MacroAssembler::DecompressTagged(Register dst, Tagged_t immediate) {
   Add_d(dst, kPtrComprCageBaseRegister, static_cast<int32_t>(immediate));
 }
 
+void MacroAssembler::DecompressProtected(const Register& destination,
+                                         const MemOperand& field_operand) {
+#if V8_ENABLE_SANDBOX
+  ASM_CODE_COMMENT(this);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Ld_wu(destination, field_operand);
+  Ld_d(scratch,
+       MemOperand(kRootRegister, IsolateData::trusted_cage_base_offset()));
+  Or(destination, destination, scratch);
+#else
+  UNREACHABLE();
+#endif  // V8_ENABLE_SANDBOX
+}
+
 void MacroAssembler::AtomicDecompressTaggedSigned(Register dst,
                                                   const MemOperand& src) {
   ASM_CODE_COMMENT(this);
@@ -5089,9 +5083,11 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, bool with_profiling,
     ASM_CODE_COMMENT_STRING(masm, "Call the api function via thunk wrapper.");
     __ bind(&profiler_or_side_effects_check_enabled);
     // Additional parameter is the address of the actual callback function.
-    MemOperand thunk_arg_mem_op = __ ExternalReferenceAsOperand(
-        ER::api_callback_thunk_argument_address(isolate), no_reg);
-    __ St_d(thunk_arg, thunk_arg_mem_op);
+    if (thunk_arg.is_valid()) {
+      MemOperand thunk_arg_mem_op = __ ExternalReferenceAsOperand(
+          ER::api_callback_thunk_argument_address(isolate), no_reg);
+      __ St_d(thunk_arg, thunk_arg_mem_op);
+    }
     __ li(scratch, thunk_ref);
     __ StoreReturnAddressAndCall(scratch);
     __ Branch(&done_api_call);

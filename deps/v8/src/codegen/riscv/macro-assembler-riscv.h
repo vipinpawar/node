@@ -92,6 +92,8 @@ inline MemOperand CFunctionArgumentOperand(int index) {
   return MemOperand(sp, offset);
 }
 
+enum StackLimitKind { kInterruptStackLimit, kRealStackLimit };
+
 class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
  public:
   using MacroAssemblerBase::MacroAssemblerBase;
@@ -674,21 +676,21 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void LoadZeroIfConditionZero(Register dest, Register condition);
 
   void SignExtendByte(Register rd, Register rs) {
-#if CAN_USE_ZBB_INSTRUCTIONS
-    sextb(rd, rs);
-#else
-    slli(rd, rs, xlen - 8);
-    srai(rd, rd, xlen - 8);
-#endif
+    if (CpuFeatures::IsSupported(ZBB)) {
+      sextb(rd, rs);
+    } else {
+      slli(rd, rs, xlen - 8);
+      srai(rd, rd, xlen - 8);
+    }
   }
 
   void SignExtendShort(Register rd, Register rs) {
-#if CAN_USE_ZBB_INSTRUCTIONS
-    sexth(rd, rs);
-#else
-    slli(rd, rs, xlen - 16);
-    srai(rd, rd, xlen - 16);
-#endif
+    if (CpuFeatures::IsSupported(ZBB)) {
+      sexth(rd, rs);
+    } else {
+      slli(rd, rs, xlen - 16);
+      srai(rd, rd, xlen - 16);
+    }
   }
 
   void Clz32(Register rd, Register rs);
@@ -698,12 +700,12 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 #if V8_TARGET_ARCH_RISCV64
   void SignExtendWord(Register rd, Register rs) { sext_w(rd, rs); }
   void ZeroExtendWord(Register rd, Register rs) {
-#if CAN_USE_ZBA_INSTRUCTIONS
-    zextw(rd, rs);
-#else
-    slli(rd, rs, 32);
-    srli(rd, rd, 32);
-#endif
+    if (CpuFeatures::IsSupported(ZBA)) {
+      zextw(rd, rs);
+    } else {
+      slli(rd, rs, 32);
+      srli(rd, rd, 32);
+    }
   }
   void Popcnt64(Register rd, Register rs, Register scratch);
   void Ctz64(Register rd, Register rs);
@@ -1192,6 +1194,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                         const MemOperand& field_operand);
   void DecompressTagged(const Register& destination, const Register& source);
   void DecompressTagged(Register dst, Tagged_t immediate);
+  void DecompressProtected(const Register& destination,
+                           const MemOperand& field_operand);
 
   // ---------------------------------------------------------------------------
   // V8 Sandbox support
@@ -1526,8 +1530,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   // -------------------------------------------------------------------------
   // Stack limit utilities
-
-  enum StackLimitKind { kInterruptStackLimit, kRealStackLimit };
   void LoadStackLimit(Register destination, StackLimitKind kind);
   void StackOverflowCheck(Register num_args, Register scratch1,
                           Register scratch2, Label* stack_overflow,
